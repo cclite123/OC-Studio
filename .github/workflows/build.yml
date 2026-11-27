@@ -1,0 +1,120 @@
+name: Build & Release OC-Studio
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout with core submodule
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build Windows app
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --windowed --name OC-Studio `
+            --add-data "core;core" `
+            --collect-data qfluentwidgets `
+            --collect-data certifi `
+            main.py
+
+      - name: Smoke test frozen Windows exe
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $proc = Start-Process -FilePath "dist/OC-Studio/OC-Studio.exe" -ArgumentList "--smoke-test" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            throw "Windows frozen executable smoke test failed with exit code $($proc.ExitCode)"
+          }
+
+      - name: Package Windows zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/OC-Studio" -DestinationPath "dist/OC-Studio-Windows-x64.zip" -Force
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OC-Studio-Windows-x64
+          path: dist/OC-Studio-Windows-x64.zip
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout with core submodule
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build macOS app
+        run: |
+          pyinstaller --noconfirm --windowed --name OC-Studio \
+            --add-data "core:core" \
+            --collect-data qfluentwidgets \
+            --collect-data certifi \
+            main.py
+
+      - name: Smoke test frozen macOS app
+        run: |
+          QT_QPA_PLATFORM=offscreen ./dist/OC-Studio.app/Contents/MacOS/OC-Studio --smoke-test
+
+      - name: Package macOS zip
+        run: |
+          cd dist
+          ditto -c -k --sequesterRsrc --keepParent "OC-Studio.app" "OC-Studio-macOS.zip"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OC-Studio-macOS
+          path: dist/OC-Studio-macOS.zip
+
+  release:
+    needs: [build-windows, build-macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release-assets/OC-Studio-Windows-x64.zip
+            release-assets/OC-Studio-macOS.zip
